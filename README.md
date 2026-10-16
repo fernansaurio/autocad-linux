@@ -54,6 +54,21 @@ Si Windows está instalando actualizaciones, el primer arranque puede tardar var
 Si Claude dice «mcp_dispatch.lsp not loaded», falta el paso 3. El aviso «Archivo ejecutable no firmado»
 puede quedar oculto detrás de AutoCAD y bloquearlo: búscalo con Alt+Tab.
 
+## En otra PC
+
+El repositorio no incluye Windows: el disco de la VM (`/var/lib/libvirt/images/win10.qcow2`)
+pesa demasiado para GitHub y hay que copiarlo aparte (disco externo, red…).
+
+1. En la PC actual, con la VM apagada (`autocad --apagar`), comprimir el disco:
+   `sudo qemu-img convert -c -O qcow2 /var/lib/libvirt/images/win10.qcow2 /media/USB/win10.qcow2`
+2. En la PC nueva: `sudo apt install qemu-kvm libvirt-daemon-system virt-manager freerdp3-x11 xvfb x11-utils libnotify-bin`,
+   agregar tu usuario a los grupos `libvirt` y `kvm`, y cerrar sesión.
+3. Copiar el disco a `/var/lib/libvirt/images/win10.qcow2` y crear la VM: `virsh -c qemu:///system define vm/win10.xml`.
+   Si tu usuario de Linux no es `kioryu`, cambia antes las rutas `/home/kioryu/...` de `vm/win10.xml`.
+4. `git clone https://github.com/fernansaurio/autocad-linux.git && cd autocad-linux && ./instalar.sh`
+   (pide IP, usuario y contraseña de Windows; la IP la ves con `virsh -c qemu:///system domifaddr win10 --source agent`).
+5. AutoCAD puede pedir iniciar sesión de nuevo en tu cuenta de Autodesk.
+
 ## Archivos
 
 - `linux/autocad` — lanzador (`~/.local/bin/autocad`).
