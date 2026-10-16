@@ -12,7 +12,7 @@
 Uso:  autocad            abrir (o traer al frente si ya está abierto)
       autocad --apagar   apagar Windows por completo (libera 7 GB de RAM)
 """
-import base64, fcntl, json, os, re, shutil, socket, subprocess, sys, threading, time
+import base64, fcntl, json, os, re, shutil, socket, subprocess, sys, time
 
 VM = "win10"
 CONN = ["virsh", "-c", "qemu:///system"]
@@ -192,44 +192,6 @@ def wm_message(win, atom, data):
     d.close()
 
 
-def toggle_window(win):
-    """Pantalla completa <-> ventana centrada al 80 %.
-
-    Sin marco y con la barra de Zorin autoocultable, «maximizada» ocupa toda la pantalla y
-    Mutter la trata como pantalla completa: el modo ventana tiene que ser más chico."""
-    from Xlib import display
-    d = display.Display()
-    w = d.create_resource_object("window", int(win, 16))
-    states = w.get_full_property(d.intern_atom("_NET_WM_STATE"), 0)
-    full = states is not None and d.intern_atom("_NET_WM_STATE_FULLSCREEN") in states.value
-    d.close()
-    if not full:
-        return wm_message(win, "_NET_WM_STATE", [1, "_NET_WM_STATE_FULLSCREEN", 0, 1])
-    wm_message(win, "_NET_WM_STATE", [0, "_NET_WM_STATE_FULLSCREEN", 0, 1])
-    wm_message(win, "_NET_WM_STATE", [0, "_NET_WM_STATE_MAXIMIZED_VERT", "_NET_WM_STATE_MAXIMIZED_HORZ", 1])
-    sw, sh = screen_size()
-    # _NET_MOVERESIZE_WINDOW: gravedad + bits x,y,ancho,alto (0xF00), fuente 1 (aplicación)
-    wm_message(win, "_NET_MOVERESIZE_WINDOW", [0xF00 | (1 << 12) | 0, sw // 10, sh // 10, sw * 8 // 10, sh * 8 // 10])
-
-
-def window_buttons(win, vm_ip):
-    """Los botones de AutoCAD (Windows) avisan por el puerto 47811: minimizar o pantalla completa."""
-    while True:
-        try:
-            with socket.create_connection((vm_ip, 47811), timeout=5) as s, \
-                 open(os.path.join(LOGDIR, "botones.log"), "a", buffering=1) as log:
-                s.settimeout(None)
-                for line in s.makefile():
-                    log.write(f"{time.strftime('%H:%M:%S')} {line}")
-                    if line.strip() == "min":
-                        wm_message(win, "WM_CHANGE_STATE", [3])                              # IconicState
-                    elif line.strip() == "toggle":
-                        toggle_window(win)
-        except OSError:
-            pass
-        time.sleep(2)   # Windows aún no escucha (AutoCAD reiniciándose): reintentar
-
-
 def reconnected():
     """La reconexión terminó: sesión activa y sin pantalla de inicio de sesión (LogonUI)."""
     _, users = guest_run("cmd.exe", ["/c", "query", "user"])
@@ -314,7 +276,6 @@ def main():
     w, h = screen_size()
     rdp = subprocess.Popen(rdp_cmd(ip, user, pw, f"/size:{w * 9 // 10}x{h * 9 // 10}",
                                    "+dynamic-resolution", "/wm-class:AutoCAD", f"/t:{TITLE}",
-                                   "-decorations",      # sin barra de Linux: los botones son los de AutoCAD
                                    "-grab-keyboard"),   # la tecla Windows (Inicio) va a Linux
                            stdout=logfile("rdp.log"), stderr=subprocess.STDOUT, start_new_session=True)
     # Mientras Windows reconecta (pantalla azul de «Bienvenido») la ventana es transparente.
@@ -331,7 +292,6 @@ def main():
             time.sleep(1)
             set_opacity(win, True)
             wm_message(win, "_NET_WM_STATE", [1, "_NET_WM_STATE_MAXIMIZED_VERT", "_NET_WM_STATE_MAXIMIZED_HORZ", 1])
-            threading.Thread(target=window_buttons, args=(win, ip), daemon=True).start()
 
     # Vigilar: si se cierra la ventana o AutoCAD, pausar la VM.
     closed = 0
