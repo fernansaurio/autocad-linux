@@ -56,3 +56,9 @@ if (Test-Path $exe) {
   }
   "Carpetas compartidas: " + (($carpetas | % { "$($_[1]): ~/$($_[2])" }) -join ', ')
 }
+
+# Puerto para que los botones de AutoCAD manejen la ventana de Linux (solo desde Linux)
+Get-NetFirewallRule -Name AutoCAD-Linux-Ventana -EA 0 | Remove-NetFirewallRule
+New-NetFirewallRule -Name AutoCAD-Linux-Ventana -DisplayName 'AutoCAD: botones de ventana desde Linux' -Direction Inbound `
+  -Protocol TCP -LocalPort 47811 -RemoteAddress 192.168.122.1 -Action Allow -Profile Any | Out-Null
+"Firewall: puerto 47811 abierto solo para 192.168.122.1"

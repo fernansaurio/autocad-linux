@@ -37,7 +37,7 @@ for c in virsh xfreerdp3 Xvfb xprop xwininfo xrandr notify-send python3; do
 done
 if ((${#faltan[@]})); then
     warn "Faltan programas: ${faltan[*]}"
-    echo "    En Ubuntu/Zorin: sudo apt install libvirt-clients freerdp3-x11 xvfb x11-utils x11-xserver-utils libnotify-bin python3"
+    echo "    En Ubuntu/Zorin: sudo apt install libvirt-clients freerdp3-x11 xvfb x11-utils x11-xserver-utils libnotify-bin python3 python3-xlib"
     exit 1
 fi
 

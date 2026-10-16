@@ -8,10 +8,11 @@ public class Win {
   public delegate bool CB(IntPtr h, IntPtr l);
   [DllImport("user32.dll")] static extern bool EnumWindows(CB cb, IntPtr l);
   [DllImport("user32.dll")] static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
-  [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
   [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint p);
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int c);
   [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool IsZoomed(IntPtr h);
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
   [DllImport("user32.dll")] public static extern IntPtr FindWindow(string c, string t);
   [DllImport("user32.dll")] public static extern IntPtr FindWindowEx(IntPtr p, IntPtr a, string c, string t);
@@ -77,8 +78,34 @@ if ($h -eq [IntPtr]::Zero) {
 if ($h -ne [IntPtr]::Zero) { [Win]::ShowWindow($h, 3) | Out-Null; [Win]::SetForegroundWindow($h) | Out-Null }
 Set-Content $listo (Get-Date -Format o)
 
-# Mientras AutoCAD siga abierto, mantener oculta la barra de tareas
-# (Windows la vuelve a mostrar al cambiar la resolucion o reconectar).
-while (Get-Process acad -EA 0) { [Win]::Taskbar($false); Start-Sleep 2 }
+# Los botones de AutoCAD manejan la ventana de Linux: el lanzador de Linux se conecta a
+# este puerto y recibe "min" (minimizar) o "toggle" (pantalla completa <-> ventana).
+# AutoCAD vuelve enseguida a maximizado para llenar siempre la pantalla remota.
+$linux = [Net.IPAddress]::Parse('192.168.122.1')
+$srv = New-Object Net.Sockets.TcpListener([Net.IPAddress]::Any, 47811)
+try { $srv.Start() } catch { $srv = $null }
+$cli = $null; $out = $null
+function Avisar($m) {
+  Add-Content C:\Users\Public\autocad_botones.log "$(Get-Date -Format HH:mm:ss.fff) $m"
+  if (-not $script:out) { return }
+  try { $script:out.WriteLine($m); $script:out.Flush() } catch { $script:cli.Close(); $script:cli = $null; $script:out = $null }
+}
+$i = 0
+while (Get-Process acad -EA 0) {
+  if ($i % 8 -eq 0) { [Win]::Taskbar($false); $nh = Ventana; if ($nh -ne [IntPtr]::Zero) { $h = $nh } }
+  if ($srv -and $srv.Pending()) {
+    $c = $srv.AcceptTcpClient()
+    if ($c.Client.RemoteEndPoint.Address.Equals($linux)) {
+      if ($cli) { $cli.Close() }
+      $cli = $c; $out = New-Object IO.StreamWriter($c.GetStream())
+    } else { $c.Close() }
+  }
+  if ($h -ne [IntPtr]::Zero) {
+    if ([Win]::IsIconic($h)) { Avisar 'min'; [Win]::ShowWindow($h, 3) | Out-Null }
+    elseif (-not [Win]::IsZoomed($h) -and [Win]::IsWindowVisible($h)) { Avisar 'toggle'; [Win]::ShowWindow($h, 3) | Out-Null }
+  }
+  $i++; Start-Sleep -m 250
+}
+if ($cli) { $cli.Close() }; if ($srv) { $srv.Stop() }
 Remove-Item $listo -EA 0
 [Win]::AutoHide($false); [Win]::Taskbar($true)
