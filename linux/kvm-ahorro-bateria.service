@@ -1,0 +1,10 @@
+[Unit]
+Description=Ajustar KVM según batería/cargador (AutoCAD en VM)
+After=systemd-modules-load.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/kvm-ahorro-bateria
+
+[Install]
+WantedBy=multi-user.target

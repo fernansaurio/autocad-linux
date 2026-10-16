@@ -1,0 +1,11 @@
+#!/bin/sh
+# Con batería, KVM deja de «sondear» (girar la CPU 200 µs tras cada pausa de la VM).
+# Ahorra energía con la VM de AutoCAD abierta; enchufado vuelve al valor normal.
+# Lo llaman la regla udev 90-kvm-ahorro-bateria.rules y el servicio del mismo nombre.
+p=/sys/module/kvm/parameters/halt_poll_ns
+[ -w "$p" ] || exit 0
+for ps in /sys/class/power_supply/*; do
+  [ "$(cat "$ps/type" 2>/dev/null)" = Mains ] || continue
+  if [ "$(cat "$ps/online")" = 0 ]; then echo 0 > "$p"; else echo 200000 > "$p"; fi
+  exit 0
+done

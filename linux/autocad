@@ -1,0 +1,298 @@
+#!/usr/bin/env python3
+"""Abre AutoCAD 2027 (VM libvirt «win10») en una ventana donde solo se ve AutoCAD.
+
+1. Enciende o reanuda la VM y corrige su reloj (Autodesk da «Error del reloj» si se atrasa).
+2. Si no hay sesión de Windows, inicia sesión con una conexión RDP invisible
+   (Xvfb) para que no se vea la pantalla de «Bienvenido».
+3. Abre AutoCAD maximizado y sin barra de tareas (tarea «AbrirAutoCAD» en Windows)
+   y espera a que esté listo.
+4. Solo entonces muestra la ventana, que se puede redimensionar.
+5. Al cerrar la ventana o AutoCAD, la VM se pausa (0 % CPU, nada de batería).
+
+Uso:  autocad            abrir (o traer al frente si ya está abierto)
+      autocad --apagar   apagar Windows por completo (libera 7 GB de RAM)
+"""
+import base64, fcntl, json, os, re, shutil, socket, subprocess, sys, time
+
+VM = "win10"
+CONN = ["virsh", "-c", "qemu:///system"]
+CONF = os.path.expanduser("~/.config/winapps/winapps.conf")
+LISTO = r"C:\Users\Public\autocad_listo.txt"
+TITLE = "AutoCAD 2027"
+
+
+def conf():
+    vals = {}
+    for line in open(CONF):
+        m = re.match(r'^(\w+)="?(.*?)"?\s*$', line)
+        if m:
+            vals[m[1]] = m[2]
+    return vals
+
+
+def notify(msg, urgent=False):
+    if shutil.which("notify-send"):
+        subprocess.run(["notify-send", "-a", "AutoCAD", "-i", "autocad", "-t", "5000",
+                        *(["-u", "critical"] if urgent else []), "AutoCAD", msg])
+    print(msg, file=sys.stderr)
+
+
+def state():
+    return subprocess.run(CONN + ["domstate", VM], capture_output=True, text=True).stdout.strip()
+
+
+def ga(cmd, timeout=10, retry=20):
+    # Justo después de reanudar la VM el agente responde «not available for now» un rato:
+    # reintentar en vez de rendirse.
+    end = time.time() + retry
+    while True:
+        r = subprocess.run(CONN + ["qemu-agent-command", VM, json.dumps(cmd), "--timeout", str(timeout)],
+                           capture_output=True, text=True)
+        if r.returncode == 0:
+            return json.loads(r.stdout)["return"]
+        if time.time() > end or "domain is not running" in r.stderr:
+            raise RuntimeError(r.stderr.strip())
+        time.sleep(1)
+
+
+def guest_run(exe, args, wait=30):
+    """Ejecuta un programa en Windows (como SYSTEM) y devuelve (código, salida)."""
+    pid = ga({"execute": "guest-exec", "arguments": {"path": exe, "arg": args, "capture-output": True}})["pid"]
+    end = time.time() + wait
+    while time.time() < end:
+        st = ga({"execute": "guest-exec-status", "arguments": {"pid": pid}})
+        if st.get("exited"):
+            return st.get("exitcode"), base64.b64decode(st.get("out-data", "")).decode("utf-8", "replace")
+        time.sleep(0.3)
+    raise RuntimeError(f"{exe} no terminó")
+
+
+def wait_for(check, seconds, step=0.5):
+    end = time.time() + seconds
+    while time.time() < end:
+        try:
+            if check():
+                return True
+        except Exception:
+            pass
+        time.sleep(step)
+    return False
+
+
+def rdp_up(ip):
+    with socket.create_connection((ip, 3389), timeout=2):
+        return True
+
+
+def has_session(user):
+    _, out = guest_run("cmd.exe", ["/c", "query", "user"])
+    return user.lower() in out.lower()
+
+
+def logged_in(user):
+    """La sesión de Windows terminó de cargar (ya corre el Explorador)."""
+    _, out = guest_run("tasklist.exe", ["/fi", f"username eq {user}", "/fi", "imagename eq explorer.exe", "/nh"])
+    return "explorer.exe" in out.lower()
+
+
+def acad_running():
+    _, out = guest_run("tasklist.exe", ["/fi", "imagename eq acad.exe", "/nh"])
+    return "acad.exe" in out.lower()
+
+
+def ready():
+    code, _ = guest_run("cmd.exe", ["/c", "type", LISTO])
+    return code == 0
+
+
+def on_battery():
+    try:
+        for ps in os.listdir("/sys/class/power_supply"):
+            p = f"/sys/class/power_supply/{ps}"
+            if open(f"{p}/type").read().strip() == "Mains":
+                return open(f"{p}/online").read().strip() == "0"
+    except OSError:
+        pass
+    return False
+
+
+def set_fps():
+    # 60 fps enchufado, 30 fps con batería (menos CPU en Windows y en Linux).
+    val = "33" if on_battery() else "15"
+    guest_run("reg.exe", ["add", r"HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations",
+                          "/v", "DWMFRAMEINTERVAL", "/t", "REG_DWORD", "/d", val, "/f"])
+
+
+def rdp_pids(ip):
+    r = subprocess.run(["pgrep", "-f", f"^xfreerdp3 /v:{ip}"], capture_output=True, text=True)
+    return [int(p) for p in r.stdout.split()]
+
+
+def kill_proc(p):
+    if p.poll() is None:
+        p.terminate()
+        try:
+            p.wait(3)
+        except subprocess.TimeoutExpired:
+            p.kill()
+            p.wait()
+
+
+def rdp_cmd(ip, user, pw, *extra):
+    return ["xfreerdp3", f"/v:{ip}", f"/u:{user}", f"/p:{pw}", "/d:", "/cert:ignore",
+            "/network:lan", "/gfx:progressive", "-wallpaper", "-window-drag", "-menu-anims",
+            "+clipboard", "+auto-reconnect", *extra]
+
+
+LOGDIR = os.path.expanduser("~/.cache/autocad")
+
+
+def logfile(name):
+    os.makedirs(LOGDIR, exist_ok=True)
+    return open(os.path.join(LOGDIR, name), "w")
+
+
+def hidden_logon(ip, user, pw):
+    """Inicia sesión en Windows sin que se vea nada (RDP contra un X virtual)."""
+    xvfb = subprocess.Popen(["Xvfb", ":77", "-screen", "0", "1366x768x24", "-nolisten", "tcp"],
+                            stdout=subprocess.DEVNULL, stderr=logfile("xvfb.log"))
+    wait_for(lambda: os.path.exists("/tmp/.X11-unix/X77"), 10, step=0.1)
+    env = dict(os.environ, DISPLAY=":77")
+    env.pop("WAYLAND_DISPLAY", None)
+    log = logfile("rdp-oculto.log")
+    rdp = subprocess.Popen(rdp_cmd(ip, user, pw, "/size:1366x768"), env=env, stdout=log, stderr=log)
+    return xvfb, rdp
+
+
+def find_window(title):
+    out = subprocess.run(["xwininfo", "-root", "-tree"], capture_output=True, text=True).stdout
+    # La ventana del cliente, no el marco que le pone Mutter («mutter-x11-frames»).
+    m = re.search(r"^\s*(0x[0-9a-f]+) \"" + re.escape(title) + r"\": \(\"[^\"]*\" \"AutoCAD\"\)", out, re.M)
+    return m[1] if m else None
+
+
+def set_opacity(win, visible):
+    # Mutter respeta _NET_WM_WINDOW_OPACITY: la ventana existe pero no se ve.
+    if visible:
+        subprocess.run(["xprop", "-id", win, "-remove", "_NET_WM_WINDOW_OPACITY"], capture_output=True)
+    else:
+        subprocess.run(["xprop", "-id", win, "-f", "_NET_WM_WINDOW_OPACITY", "32c",
+                        "-set", "_NET_WM_WINDOW_OPACITY", "0"], capture_output=True)
+
+
+def reconnected():
+    """La reconexión terminó: sesión activa y sin pantalla de inicio de sesión (LogonUI)."""
+    _, users = guest_run("cmd.exe", ["/c", "query", "user"])
+    _, logon = guest_run("tasklist.exe", ["/fi", "imagename eq logonui.exe", "/nh"])
+    return re.search(r"\b(Active|Activo)\b", users) and "logonui.exe" not in logon.lower()
+
+
+def screen_size():
+    out = subprocess.run(["xrandr", "--current"], capture_output=True, text=True).stdout
+    m = re.search(r"primary (\d+)x(\d+)", out) or re.search(r"current (\d+) x (\d+)", out)
+    return (int(m[1]), int(m[2])) if m else (1366, 768)
+
+
+def apagar():
+    ip = conf()["RDP_IP"]
+    for p in rdp_pids(ip):
+        os.kill(p, 9)
+    if state() == "paused":
+        subprocess.run(CONN + ["resume", VM])
+    if subprocess.run(CONN + ["shutdown", VM, "--mode", "agent"], capture_output=True).returncode:
+        subprocess.run(CONN + ["shutdown", VM, "--mode", "acpi"], capture_output=True)
+    notify("Apagando Windows…")
+
+
+def main():
+    if "--apagar" in sys.argv:
+        return apagar()
+
+    # Una sola instancia: si ya hay otra abriendo/vigilando AutoCAD, que ella se encargue.
+    lock = open(os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "autocad-lanzador.lock"), "w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        if rdp_pids(conf()["RDP_IP"]):
+            guest_run("schtasks.exe", ["/run", "/tn", "AbrirAutoCAD"])   # traer al frente
+        else:
+            notify("AutoCAD ya se está abriendo…")
+        return
+
+    c = conf()
+    ip, user, pw = c["RDP_IP"], c["RDP_USER"], c.get("RDP_PASS", "")
+
+    st = state()
+    if st == "paused":
+        subprocess.run(CONN + ["resume", VM], check=True, capture_output=True)
+    elif st != "running":
+        notify("Abriendo AutoCAD… (Windows arranca en segundo plano, ~40 s)")
+        subprocess.run(CONN + ["start", VM], check=True, capture_output=True)
+
+    agent = lambda: ga({"execute": "guest-ping"}, 2, retry=0) == {}
+    if not wait_for(agent, 60):
+        notify("Windows está tardando (puede estar instalando actualizaciones)…")
+    if not wait_for(agent, 240) or not wait_for(lambda: rdp_up(ip), 120):
+        return notify("Windows no respondió. Ábrelo con virt-manager para ver qué pasa.", urgent=True)
+    ga({"execute": "guest-set-time", "arguments": {"time": time.time_ns()}})
+
+    if rdp_pids(ip):
+        # Ya hay una ventana abierta: solo traer AutoCAD al frente.
+        guest_run("schtasks.exe", ["/run", "/tn", "AbrirAutoCAD"])
+        return
+
+    set_fps()
+    hidden = None
+    if not has_session(user):
+        hidden = hidden_logon(ip, user, pw)
+        if not wait_for(lambda: has_session(user), 90, step=1):
+            for p in hidden[::-1]:
+                kill_proc(p)
+            return notify("No se pudo iniciar sesión en Windows.", urgent=True)
+    elif not acad_running():
+        notify("Abriendo AutoCAD…")
+
+    wait_for(lambda: logged_in(user), 90, step=1)
+    guest_run("cmd.exe", ["/c", "del", "/q", LISTO])
+    guest_run("schtasks.exe", ["/run", "/tn", "AbrirAutoCAD"])
+    wait_for(ready, 180, step=1)
+    if hidden:
+        for p in hidden[::-1]:
+            kill_proc(p)
+        time.sleep(1)
+
+    w, h = screen_size()
+    rdp = subprocess.Popen(rdp_cmd(ip, user, pw, f"/size:{w * 9 // 10}x{h * 9 // 10}",
+                                   "+dynamic-resolution", "/wm-class:AutoCAD", f"/t:{TITLE}"),
+                           stdout=logfile("rdp.log"), stderr=subprocess.STDOUT, start_new_session=True)
+    # Mientras Windows reconecta (pantalla azul de «Bienvenido») la ventana es transparente.
+    win = None
+    if os.environ.get("XDG_SESSION_TYPE") == "x11":
+        end = time.time() + 20
+        while not win and time.time() < end and rdp.poll() is None:
+            win = find_window(TITLE)
+            time.sleep(0.02)
+        if win:
+            set_opacity(win, False)
+            time.sleep(1.5)
+            wait_for(reconnected, 15, step=0.5)
+            time.sleep(1)
+            set_opacity(win, True)
+
+    # Vigilar: si se cierra la ventana o AutoCAD, pausar la VM.
+    closed = 0
+    while rdp.poll() is None:
+        time.sleep(5 if on_battery() else 3)
+        try:
+            closed = closed + 1 if not acad_running() else 0
+        except RuntimeError:
+            closed = 0          # el agente no respondió: no asumir que se cerró
+        if closed >= 2:
+            break
+    kill_proc(rdp)
+    if state() == "running":
+        subprocess.run(CONN + ["suspend", VM], capture_output=True)
+
+
+if __name__ == "__main__":
+    main()

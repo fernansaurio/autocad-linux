@@ -1,0 +1,2 @@
+# Ajustar KVM al conectar/desconectar el cargador (ver /usr/local/sbin/kvm-ahorro-bateria)
+SUBSYSTEM=="power_supply", ATTR{type}=="Mains", RUN+="/usr/local/sbin/kvm-ahorro-bateria"
