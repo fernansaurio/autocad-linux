@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Windows (AutoCAD) en la bandeja
+Comment=Ícono de la máquina virtual de Windows con pausar, reanudar y apagar
+Exec=@HOME@/.local/bin/autocad-bandeja
+Icon=autocad
+X-GNOME-Autostart-enabled=true
+NoDisplay=true

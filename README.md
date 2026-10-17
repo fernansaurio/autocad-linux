@@ -26,6 +26,7 @@ datos de conexión se guardan en `~/.config/winapps/winapps.conf` (el mismo arch
 | Mostrar | Abre la ventana (redimensionable, la resolución de Windows se adapta) y la deja transparente hasta que termina de reconectar. |
 | Cerrar | Al cerrar la ventana o AutoCAD, la VM se **pausa**: 0 % de CPU, y la próxima vez abre al instante. |
 | Clic derecho → «Apagar Windows» | Apaga la VM y libera su RAM. |
+| Ícono en la bandeja | Logo de Windows junto a los íconos del sistema mientras la VM está encendida (azul) o en pausa (gris). Menú: abrir AutoCAD, pausar/reanudar, reiniciar, apagar, abrir en virt-manager. Usa eventos de libvirt, no gasta batería. |
 
 Los archivos se abren y guardan con el explorador de Windows. Carpetas compartidas con Linux
 (virtiofs, fijadas en Acceso rápido): `Z:` = ~/Documentos, `Y:` = ~/Descargas, `X:` = ~/Escritorio.
@@ -72,6 +73,7 @@ pesa demasiado para GitHub y hay que copiarlo aparte (disco externo, red…).
 ## Archivos
 
 - `linux/autocad` — lanzador (`~/.local/bin/autocad`).
+- `linux/autocad-bandeja` — ícono de la VM en la bandeja (arranca solo con la sesión).
 - `linux/kvm-ahorro-bateria*` — ahorro de batería de KVM.
 - `windows/configurar_windows.ps1` — zona horaria, rendimiento, efectos visuales, tarea programada.
 - `windows/instalar_mcp.ps1` — conecta AutoCAD con Claude Code (autocad-mcp, HTTP en `192.168.122.168:8765/mcp`); luego `claude mcp add --scope user --transport http autocad http://192.168.122.168:8765/mcp`.

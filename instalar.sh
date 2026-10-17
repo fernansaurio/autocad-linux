@@ -21,7 +21,9 @@ info() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m!!\033[0m %s\n' "$*"; }
 
 if [[ "${1:-}" == "--desinstalar" ]]; then
-    rm -f "$BIN/autocad" "$APPS/autocad.desktop" "$ICONS/autocad.png"
+    pkill -f "$BIN/autocad-bandeja" || true
+    rm -f "$BIN/autocad" "$BIN/autocad-bandeja" "$APPS/autocad.desktop" "$ICONS/autocad.png" "$HOME/.config/autostart/autocad-bandeja.desktop"
+    rm -rf "$HOME/.local/share/autocad-linux"
     sudo rm -f /usr/local/sbin/kvm-ahorro-bateria /etc/udev/rules.d/90-kvm-ahorro-bateria.rules
     sudo systemctl disable --now kvm-ahorro-bateria.service 2>/dev/null || true
     sudo rm -f /etc/systemd/system/kvm-ahorro-bateria.service
@@ -37,7 +39,7 @@ for c in virsh xfreerdp3 Xvfb xprop xwininfo xrandr notify-send python3; do
 done
 if ((${#faltan[@]})); then
     warn "Faltan programas: ${faltan[*]}"
-    echo "    En Ubuntu/Zorin: sudo apt install libvirt-clients freerdp3-x11 xvfb x11-utils x11-xserver-utils libnotify-bin python3 python3-xlib"
+    echo "    En Ubuntu/Zorin: sudo apt install libvirt-clients freerdp3-x11 xvfb x11-utils x11-xserver-utils libnotify-bin python3 python3-xlib python3-gi python3-libvirt gir1.2-ayatanaappindicator3-0.1"
     exit 1
 fi
 
@@ -56,6 +58,12 @@ RDP_USER=$(grep -oP '^RDP_USER="?\K[^"]*' "$CONF")
 # --- App de Linux -------------------------------------------------------------
 info "Instalando la app «AutoCAD 2027»"
 install -Dm755 linux/autocad "$BIN/autocad"
+# Ícono de Windows en la bandeja (pausar, reanudar, apagar), arranca con la sesión
+install -Dm755 linux/autocad-bandeja "$BIN/autocad-bandeja"
+install -Dm644 -t "$HOME/.local/share/autocad-linux/iconos" linux/iconos/*.svg
+mkdir -p "$HOME/.config/autostart"
+sed "s|@HOME@|$HOME|g" linux/autocad-bandeja.desktop > "$HOME/.config/autostart/autocad-bandeja.desktop"
+pgrep -f "$BIN/autocad-bandeja" >/dev/null || setsid "$BIN/autocad-bandeja" &>/dev/null < /dev/null &
 install -Dm644 linux/autocad.png "$ICONS/autocad.png"
 mkdir -p "$APPS"
 cat > "$APPS/autocad.desktop" <<EOF

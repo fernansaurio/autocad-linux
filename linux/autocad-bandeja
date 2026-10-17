@@ -1,0 +1,126 @@
+#!/usr/bin/env python3
+"""Ícono de Windows en la bandeja: se ve mientras la VM «win10» está encendida o en pausa.
+
+Menú: abrir AutoCAD, pausar/reanudar, reiniciar, apagar y abrir virt-manager.
+Usa los eventos de libvirt (no consulta cada X segundos), así que no gasta batería.
+"""
+import os, subprocess, threading, time
+
+import gi
+gi.require_version("Gtk", "3.0")
+gi.require_version("AyatanaAppIndicator3", "0.1")
+from gi.repository import AyatanaAppIndicator3 as AI, GLib, Gtk
+import libvirt
+
+VM = "win10"
+URI = "qemu:///system"
+BIN = os.path.expanduser("~/.local/bin")
+ICONOS = os.path.expanduser("~/.local/share/autocad-linux/iconos")
+
+libvirt.registerErrorHandler(lambda *_: None, None)   # sin mensajes de libvirt en la terminal
+
+
+def run(*cmd):
+    subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+
+
+class Bandeja:
+    def __init__(self):
+        self.ind = AI.Indicator.new("autocad-vm-windows", "vm-windows", AI.IndicatorCategory.SYSTEM_SERVICES)
+        self.ind.set_icon_theme_path(ICONOS)
+        self.ind.set_title("Windows (AutoCAD)")
+        self.dom = None
+
+        m = Gtk.Menu()
+        self.estado = Gtk.MenuItem(label="…", sensitive=False)
+        self.pausa = Gtk.MenuItem(label="Pausar")
+        items = [
+            self.estado, Gtk.SeparatorMenuItem(),
+            ("Abrir AutoCAD", lambda *_: run(f"{BIN}/autocad")),
+            self.pausa,
+            ("Reiniciar Windows", lambda *_: self.dom and self.dom.reboot(libvirt.VIR_DOMAIN_REBOOT_GUEST_AGENT)),
+            ("Apagar Windows", lambda *_: run(f"{BIN}/autocad", "--apagar")),
+            Gtk.SeparatorMenuItem(),
+            ("Abrir en virt-manager", lambda *_: run("virt-manager", "--connect", URI, "--show-domain-console", VM)),
+        ]
+        self.pausa.connect("activate", self.pausar_reanudar)
+        for it in items:
+            if isinstance(it, tuple):
+                mi = Gtk.MenuItem(label=it[0])
+                mi.connect("activate", lambda w, f=it[1]: self.seguro(f))
+                it = mi
+            m.append(it)
+        m.show_all()
+        self.ind.set_menu(m)
+
+        libvirt.virEventRegisterDefaultImpl()
+        threading.Thread(target=self.bucle_libvirt, daemon=True).start()
+
+    def seguro(self, f):
+        try:
+            f()
+        except libvirt.libvirtError as e:
+            run("notify-send", "-a", "AutoCAD", "-i", "dialog-error", "Windows", e.get_error_message())
+
+    def pausar_reanudar(self, *_):
+        if not self.dom:
+            return
+        def hacer():
+            if self.dom.state()[0] == libvirt.VIR_DOMAIN_PAUSED:
+                self.dom.resume()
+                # El reloj de Windows se atrasa durante la pausa (Autodesk da «Error del reloj»)
+                for _ in range(20):
+                    try:
+                        return libvirt_qemu_set_time(self.dom)
+                    except libvirt.libvirtError:
+                        time.sleep(1)
+            else:
+                self.dom.suspend()
+        threading.Thread(target=self.seguro, args=(hacer,), daemon=True).start()   # no congelar el menú
+
+    def bucle_libvirt(self):
+        while True:
+            try:
+                conn = libvirt.open(URI)
+                self.dom = conn.lookupByName(VM)
+                conn.domainEventRegisterAny(self.dom, libvirt.VIR_DOMAIN_EVENT_ID_LIFECYCLE,
+                                            lambda *_: GLib.idle_add(self.actualizar), None)
+                conn.setKeepAlive(5, 3)
+                GLib.idle_add(self.actualizar)
+                while conn.isAlive():
+                    libvirt.virEventRunDefaultImpl()
+            except libvirt.libvirtError:
+                pass
+            self.dom = None
+            GLib.idle_add(self.actualizar)
+            time.sleep(5)   # libvirtd reiniciándose: volver a conectar
+
+    def actualizar(self):
+        try:
+            st = self.dom.state()[0] if self.dom else None
+        except libvirt.libvirtError:
+            st = None
+        if st == libvirt.VIR_DOMAIN_RUNNING:
+            self.ind.set_status(AI.IndicatorStatus.ACTIVE)
+            self.ind.set_icon_full("vm-windows", "Windows encendido")
+            self.estado.set_label("Windows: encendido")
+            self.pausa.set_label("Pausar (0 % de CPU)")
+        elif st == libvirt.VIR_DOMAIN_PAUSED:
+            self.ind.set_status(AI.IndicatorStatus.ACTIVE)
+            self.ind.set_icon_full("vm-windows-pausa", "Windows en pausa")
+            self.estado.set_label("Windows: en pausa")
+            self.pausa.set_label("Reanudar")
+        else:
+            self.ind.set_status(AI.IndicatorStatus.PASSIVE)   # apagada: el ícono desaparece
+        return False
+
+
+def libvirt_qemu_set_time(dom):
+    import libvirt_qemu, json
+    ns = time.time_ns()
+    libvirt_qemu.qemuAgentCommand(dom, json.dumps({"execute": "guest-set-time", "arguments": {"time": ns}}), 10, 0)
+
+
+if __name__ == "__main__":
+    Bandeja()
+    Gtk.main()
